@@ -43,8 +43,8 @@ Hand-drawn pixel fish swim behind your text while you work. Feed them, fish for 
 ## 🚀 Install
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/macquarium.git
-cd macquarium
+git clone https://github.com/coooooooooooops/Macquarium.git
+cd Macquarium
 ./install.sh
 ```
 

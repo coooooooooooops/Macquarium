@@ -20,8 +20,8 @@ The first public release of **Macquarium**: a live pixel-art coral reef that liv
 ## Install
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/macquarium.git
-cd macquarium && ./install.sh
+git clone https://github.com/coooooooooooops/Macquarium.git
+cd Macquarium && ./install.sh
 ```
 
 Requires macOS 11+ and Apple's Command Line Tools (the installer prompts for them). It's built and tested on macOS 27.

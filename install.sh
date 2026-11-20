@@ -1,10 +1,10 @@
 #!/bin/bash
 # Macquarium installer: builds the tank app on your Mac and sets up the command.
 #   From a clone:   ./install.sh
-#   One-liner:      curl -fsSL https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/macquarium/main/install.sh | bash
+#   One-liner:      curl -fsSL https://raw.githubusercontent.com/coooooooooooops/Macquarium/main/install.sh | bash
 set -e
 
-REPO_URL="https://github.com/YOUR_GITHUB_USERNAME/macquarium.git"
+REPO_URL="https://github.com/coooooooooooops/Macquarium.git"
 MQ_HOME="${MACQUARIUM_HOME:-$HOME/.macquarium}"
 APP="$HOME/Applications/Macquarium.app"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
@@ -32,14 +32,27 @@ say "Building the tank app..."
 BUILD="$(mktemp -d)"
 xcrun swiftc -O "$SRC/app/main.swift" -framework AppKit -framework WebKit -o "$BUILD/Macquarium" \
   || die "Build failed. Copy the error above into a GitHub issue."
+# stop the running tank first: unload the login item so launchd doesn't relaunch it mid-install
+launchctl bootout "gui/$(id -u)/com.coops.macquarium" 2>/dev/null || true
 pkill -x Macquarium 2>/dev/null || true
-rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BUILD/Macquarium" "$APP/Contents/MacOS/Macquarium"
-cp "$SRC/app/Info.plist" "$APP/Contents/Info.plist"
-cp -R "$SRC/app/tank" "$APP/Contents/Resources/tank"
-cp "$SRC/app/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns" 2>/dev/null || true
-cp "$SRC/app/MenuIcon.png" "$SRC/app/MenuIcon@2x.png" "$APP/Contents/Resources/" 2>/dev/null || true
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+sleep 0.5
+
+# assemble the app in a temporary folder, then swap it into place in one go
+STAGE="$BUILD/Macquarium.app"
+mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
+cp "$BUILD/Macquarium" "$STAGE/Contents/MacOS/Macquarium"
+cp "$SRC/app/Info.plist" "$STAGE/Contents/Info.plist"
+ditto --noextattr --noqtn "$SRC/app/tank" "$STAGE/Contents/Resources/tank"
+for f in AppIcon.icns MenuIcon.png MenuIcon@2x.png; do
+  if [ -f "$SRC/app/$f" ]; then ditto --noextattr --noqtn "$SRC/app/$f" "$STAGE/Contents/Resources/$f"; fi
+done
+xattr -cr "$STAGE" 2>/dev/null || true
+codesign --force --deep --sign - "$STAGE" >/dev/null 2>&1 || true
+mkdir -p "$HOME/Applications"
+rm -rf "$APP" 2>/dev/null || true
+if ! mv "$STAGE" "$APP" 2>/dev/null; then
+  ditto --noextattr --noqtn "$STAGE" "$APP" || die "Couldn't install the app into ~/Applications. Try: rm -rf ~/Applications/Macquarium.app and run ./install.sh again."
+fi
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" >/dev/null 2>&1 || true
 rm -rf "$BUILD"
 say "Tank app installed at $APP"
