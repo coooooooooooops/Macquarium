@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Macquarium</title>
+<style>
+  @font-face { font-family: 'Pixelify'; src: url('fonts/pixelify-sans-latin-400-normal.woff2') format('woff2'); font-weight: 400; }
+  @font-face { font-family: 'Pixelify'; src: url('fonts/pixelify-sans-latin-600-normal.woff2') format('woff2'); font-weight: 600; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #03182b; cursor: default;
+               font: 15px/1.1 'Pixelify', monospace; -webkit-font-smoothing: none; font-smooth: never; user-select: none; }
+  #c { position: fixed; inset: 0; width: 100vw; height: 100vh; image-rendering: pixelated; image-rendering: crisp-edges; }
+  #hud { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); display: none; gap: 10px; align-items: center;
+         padding: 8px 10px; border-radius: 14px; background: rgba(4, 22, 36, .72); backdrop-filter: blur(10px);
+         -webkit-backdrop-filter: blur(10px); color: #d8f4ff; box-shadow: 0 6px 24px rgba(0,0,0,.35); border: 1px solid rgba(127,220,255,.18); }
+  body.care #hud { display: flex; }
+  body.care { cursor: crosshair; }
+  .meter { display: flex; flex-direction: column; gap: 3px; min-width: 92px; }
+  .meter span { font-size: 13px; letter-spacing: .06em; opacity: .85; text-transform: uppercase; }
+  .bar { height: 8px; border-radius: 2px; background: rgba(255,255,255,.12); overflow: hidden; }
+  .bar i { display: block; height: 100%; transition: width .4s;
+           -webkit-mask: repeating-linear-gradient(90deg, #000 0 6px, transparent 6px 8px); }
+  #food i { background: linear-gradient(90deg, #ff9f43, #ffd166); }
+  #joy i { background: linear-gradient(90deg, #ff7ad9, #7fe0ff); }
+  button img { width: 22px; height: 20px; image-rendering: pixelated; vertical-align: -5px; margin-right: 5px; }
+  button img.hand { width: 13px; height: 18px; vertical-align: -3px; }
+  body.care[data-tool=tap] canvas { cursor: url('icons/tap.png') 9 1, pointer; }
+  body.care[data-tool=fish] canvas { cursor: crosshair; }
+  button { all: unset; padding: 6px 10px; border-radius: 9px; font-weight: 600; background: rgba(255,255,255,.08); color: #e6f8ff;
+           cursor: pointer; font-weight: 600; white-space: nowrap; }
+  button:hover { background: rgba(255,255,255,.16); }
+  button.on { background: #2ee6d6; color: #04202c; }
+  #back { background: rgba(255,107,107,.18); }
+  #fight { position: fixed; left: 50%; bottom: 60px; transform: translateX(-50%); display: none; gap: 14px; align-items: center;
+           padding: 8px 12px; border-radius: 12px; background: rgba(4,22,36,.8); color: #e6fbff; pointer-events: none; }
+  #fight b { min-width: 150px; font-weight: 600; }
+  #fight .bar { width: 130px; }
+  #card { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(.6); opacity: 0; transition: transform .25s, opacity .25s;
+          display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 18px 30px 16px; border-radius: 16px;
+          background: rgba(4,22,36,.96); border: 2px solid rgba(127,220,255,.45); color: #e6fbff; pointer-events: none;
+          box-shadow: 0 10px 40px rgba(0,0,0,.45); }
+  #card.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  #card canvas { image-rendering: pixelated; animation: flop .35s steps(2) infinite; }
+  #card b { font-size: 22px; font-weight: 600; }
+  #card span { font-size: 17px; color: #9fd6ea; }
+  #card span.record { color: #ffd166; }
+  @keyframes flop { 0% { transform: scaleX(1) translateY(0); } 50% { transform: scaleX(-1) translateY(-3px); } }
+  #tension i { background: linear-gradient(90deg, #7fe0ff, #ffd166); }
+  #tension.hot i { background: linear-gradient(90deg, #ffd166, #ff5a5a); }
+  #reel i { background: linear-gradient(90deg, #2ee6d6, #7fff9a); }
+  #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); color: #e6fbff; background: rgba(4,22,36,.7);
+           padding: 6px 12px; border-radius: 10px; opacity: 0; transition: opacity .4s; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <div class="meter"><span>Fullness</span><div class="bar" id="food"><i></i></div></div>
+  <div class="meter"><span>Happiness</span><div class="bar" id="joy"><i></i></div></div>
+  <button data-tool="feed" class="on"><img src="icons/feed.png">Feed</button>
+  <button data-tool="fish"><img src="icons/fish.png">Fish</button>
+  <button data-tool="tap"><img src="icons/tap_small.png" class="hand">Tap glass</button>
+  <button id="back"><img src="icons/back.png">Back to work <small style="opacity:.6">esc</small></button>
+</div>
+<div id="fight"><b>Hold to reel</b>
+  <div class="meter"><span>Line tension</span><div class="bar" id="tension"><i></i></div></div>
+  <div class="meter"><span>Reel it in</span><div class="bar" id="reel"><i></i></div></div>
+</div>
+<div id="card"><canvas id="cardfish"></canvas><b id="cardname"></b><span id="cardsize"></span></div>
+<div id="toast"></div>
+<script>
+  function mqLog(m) { try { webkit.messageHandlers.mq.postMessage({ type: 'log', msg: String(m) }); } catch (e) {} }
+  window.addEventListener('error', e => mqLog('error: ' + e.message + ' @' + (e.filename || '').split('/').pop() + ':' + e.lineno));
+  window.addEventListener('error', e => { if (e.target && e.target.src) mqLog('failed to load ' + e.target.src); }, true);
+</script>
+<script src="atlas.js"></script>
+<script src="tank.js"></script>
+</body>
+</html>

@@ -1,0 +1,498 @@
+#!/bin/bash
+# Macquarium - turn your Mac terminal into an underwater aquarium.
+# Works with the bash 3.2 that ships with macOS. No dependencies.
+
+VERSION="1.0.0"
+MQ_HOME="${MACQUARIUM_HOME:-$HOME/.macquarium}"
+STATE="$MQ_HOME/state"
+PROFILE_NAME="Macquarium-Reef"
+PROFILE_FILE="Macquarium-Reef.terminal"
+APP="$HOME/Applications/Macquarium.app"
+AGENT_LABEL="com.coops.macquarium"
+AGENT="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
+
+c_reset=$'\033[0m'; c_aqua=$'\033[38;5;45m'; c_orange=$'\033[38;5;208m'
+c_dim=$'\033[38;5;31m'; c_red=$'\033[38;5;203m'
+
+say()  { printf '%s\n' "${c_aqua}~>${c_reset} $*"; }
+warn() { printf '%s\n' "${c_orange}!${c_reset} $*" >&2; }
+die()  { printf '%s\n' "${c_red}x${c_reset} $*" >&2; exit 1; }
+
+is_terminal_app() { [ "$TERM_PROGRAM" = "Apple_Terminal" ]; }
+is_iterm()        { [ "$TERM_PROGRAM" = "iTerm.app" ]; }
+
+# ---------------------------------------------------------------- Terminal.app
+term_osa() { osascript -e "$1" 2>/dev/null; }
+
+terminal_profile_exists() {
+  # Terminal may name an imported profile after the file or after its "name" key: accept either.
+  local n
+  for n in "Macquarium-Reef" "Macquarium Reef"; do
+    if [ "$(term_osa "tell application \"Terminal\" to exists settings set \"$n\"")" = "true" ]; then
+      PROFILE_NAME="$n"; return 0
+    fi
+  done
+  return 1
+}
+
+terminal_import_profile() {
+  terminal_profile_exists && return 0
+  open "$MQ_HOME/themes/$PROFILE_FILE" || return 1
+  local i=0
+  while [ $i -lt 20 ]; do
+    terminal_profile_exists && break
+    sleep 0.25; i=$((i + 1))
+  done
+  terminal_profile_exists || return 1
+  # Importing opens one throwaway window using the profile. Close it.
+  sleep 0.4
+  term_osa "tell application \"Terminal\"
+    repeat with w in (every window)
+      try
+        if name of current settings of selected tab of w is \"$PROFILE_NAME\" then close w
+      end try
+    end repeat
+  end tell" >/dev/null
+  return 0
+}
+
+terminal_apply() { # $1 = profile name, $2 = only-retheme-tabs-using (optional)
+  local only="$2"
+  term_osa "tell application \"Terminal\"
+    set s to settings set \"$1\"
+    set default settings to s
+    set startup settings to s
+    repeat with w in (every window)
+      repeat with t in (every tab of w)
+        try
+          if \"$only\" is \"\" or name of current settings of t is \"$only\" then set current settings of t to s
+        end try
+      end repeat
+    end repeat
+  end tell" >/dev/null
+}
+
+# ---------------------------------------------------------------- the live tank app
+app_running() { pgrep -x Macquarium >/dev/null 2>&1; }
+
+write_agent() {
+  mkdir -p "$(dirname "$AGENT")"
+  cat > "$AGENT" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$AGENT_LABEL</string>
+  <key>ProgramArguments</key><array><string>$APP/Contents/MacOS/Macquarium</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ProcessType</key><string>Interactive</string>
+</dict>
+</plist>
+PLIST
+}
+
+app_start() {
+  [ -d "$APP" ] || { warn "The tank app isn't built yet. Re-run ./install.sh (it needs Xcode Command Line Tools)."; return 1; }
+  write_agent
+  launchctl bootstrap "gui/$(id -u)" "$AGENT" 2>/dev/null || true
+  launchctl kickstart "gui/$(id -u)/$AGENT_LABEL" 2>/dev/null || true
+  sleep 0.5
+  app_running || open -g "$APP"
+}
+
+app_stop() {
+  launchctl bootout "gui/$(id -u)/$AGENT_LABEL" 2>/dev/null || true
+  rm -f "$AGENT"
+  pkill -x Macquarium 2>/dev/null || true
+}
+
+tank_stat() { # $1 = full | joy
+  [ -f "$STATE/tank.json" ] && sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" "$STATE/tank.json"
+}
+
+# ---------------------------------------------------------------- commands
+cmd_on() {
+  mkdir -p "$STATE"
+  if is_terminal_app; then
+    if [ ! -f "$STATE/prev_profile" ]; then
+      local prev
+      prev="$(term_osa 'tell application "Terminal" to name of default settings')"
+      case "$prev" in ""|Macquarium*) prev="Basic" ;; esac
+      printf '%s\n' "$prev" > "$STATE/prev_profile"
+    fi
+    say "Filling the tank..."
+    terminal_import_profile || die "Couldn't import the Terminal profile. If macOS asked for Automation permission, allow it and run 'macquarium on' again."
+    terminal_apply "$PROFILE_NAME"
+  else
+    warn "The live tank sits behind Terminal.app windows. In ${TERM_PROGRAM:-this terminal} you still get the prompt and 'macquarium swim'."
+  fi
+  touch "$STATE/enabled"
+  app_start && say "Fish released. They live behind your Terminal windows now (look for the fish in your menu bar)."
+  splash
+  say "${c_aqua}macquarium care${c_reset} to feed and play with them any time."
+}
+
+cmd_off() {
+  rm -f "$STATE/enabled"
+  app_stop
+  if is_terminal_app && terminal_profile_exists; then
+    local prev="Basic"
+    [ -f "$STATE/prev_profile" ] && prev="$(cat "$STATE/prev_profile")"
+    [ "$(term_osa "tell application \"Terminal\" to exists settings set \"$prev\"")" = "true" ] || prev="Basic"
+    terminal_apply "$prev" "$PROFILE_NAME"
+    rm -f "$STATE/prev_profile"
+    say "Drained the tank. Back to \"$prev\"."
+  else
+    say "Macquarium is OFF."
+  fi
+  say "The fish are safe. They'll be waiting when you run 'macquarium on'."
+}
+
+cmd_care() {
+  [ -f "$STATE/enabled" ] || { warn "The tank is off. Run 'macquarium on' first."; return 1; }
+  app_running || { app_start; sleep 1.5; }
+  open "macquarium://care"
+}
+
+cmd_ask() {
+  mkdir -p "$STATE"
+  case "$1" in
+    off) touch "$STATE/no_ask"; say "Won't ask at startup any more. ('macquarium ask on' to undo)" ;;
+    on)  rm -f "$STATE/no_ask"; say "Will ask 'Take care of the aquarium?' when a new Terminal opens." ;;
+    *)   if [ -f "$STATE/no_ask" ]; then say "Startup question is off"; else say "Startup question is on"; fi ;;
+  esac
+}
+
+cmd_status() {
+  if [ -f "$STATE/enabled" ]; then say "Macquarium is ON"; else say "Macquarium is OFF"; fi
+  if app_running; then say "Tank app: swimming"; else say "Tank app: not running"; fi
+  local full joy; full=$(tank_stat full); joy=$(tank_stat joy)
+  [ -n "$full" ] && say "Fullness: ${full}%   Happiness: ${joy}%"
+  say "Installed at $MQ_HOME (v$VERSION), terminal: ${TERM_PROGRAM:-unknown}"
+}
+
+cmd_corners() {
+  case "$1" in ''|*[!0-9]*) say "Usage: macquarium corners <radius>   (default 16; try 12 or 20 if the corners don't line up)"; return 1 ;; esac
+  defaults write com.coops.macquarium corner -float "$1"
+  pkill -x Macquarium 2>/dev/null; sleep 0.5
+  [ -f "$STATE/enabled" ] && app_start
+  say "Tank corners set to $1."
+}
+
+cmd_doctor() {
+  cmd_status
+  say "App log (~/.macquarium/state/app.log):"
+  if [ -f "$STATE/app.log" ]; then tail -n 25 "$STATE/app.log"; else echo "   (no log yet: is the app running?)"; fi
+}
+
+remove_block() { # $1 = rc file
+  [ -f "$1" ] || return 0
+  awk '/# >>> macquarium >>>/{skip=1} !skip{print} /# <<< macquarium <<</{skip=0}' "$1" > "$1.mq.tmp" &&
+    cat "$1.mq.tmp" > "$1" && rm -f "$1.mq.tmp"
+}
+
+cmd_uninstall() {
+  printf 'Remove Macquarium completely (app, fish and settings)? [y/N] '
+  read -r ans
+  case "$ans" in y|Y|yes) ;; *) say "Kept the fish."; return ;; esac
+  cmd_off
+  if is_terminal_app && terminal_profile_exists; then
+    term_osa "tell application \"Terminal\" to delete settings set \"$PROFILE_NAME\"" >/dev/null
+  fi
+  rm -rf "$APP"
+  defaults delete com.coops.macquarium >/dev/null 2>&1 || true
+  remove_block "$HOME/.zshrc"; remove_block "$HOME/.bash_profile"; remove_block "$HOME/.bashrc"
+  rm -rf "$MQ_HOME"
+  say "Macquarium removed. So long, and thanks for all the fish."
+}
+
+cmd_help() {
+  cat <<EOF
+${c_aqua}macquarium${c_reset} v$VERSION - a live pixel-art aquarium behind your Mac terminal
+
+  macquarium on          start the tank behind Terminal + underwater prompt
+  macquarium off         stop it and restore your old profile and prompt
+  macquarium care        feed and play with the fish (esc to go back)
+  macquarium ask on|off  the "Take care of the aquarium?" question on startup
+  macquarium status      is it on, and how are the fish doing
+  macquarium corners N   round the tank's corners to match Terminal (default 16)
+  macquarium swim        old-school text aquarium right in the terminal
+  macquarium uninstall   remove everything
+
+  Menu bar fish: tank brightness, hide the tank, quit.
+EOF
+}
+
+# ---------------------------------------------------------------- splash
+splash() {
+  [ -t 1 ] || return 0
+  local cols x fish='><(((`>' trail
+  cols=$(tput cols 2>/dev/null || echo 80)
+  x=0
+  printf '\033[?25l'
+  while [ $x -lt $((cols - 8)) ]; do
+    trail=""
+    [ $x -gt 2 ] && trail="${c_dim}$(printf '%*s' $((x - 3)) '' | tr ' ' '~')${c_reset} o "
+    printf '\r%s%s%s%s' "$trail" "$c_orange" "$fish" "$c_reset"
+    x=$((x + 3)); sleep 0.012
+  done
+  printf '\r\033[K\033[?25h'
+}
+
+# ---------------------------------------------------------------- the tank
+# Sprites: lines joined with '@'. Right-facing and left-facing versions.
+SPR_R[0]='><>';                    SPR_L[0]='<><'
+SPR_R[1]="><((('>";                SPR_L[1]="<')))><"
+SPR_R[2]=">-{{'>";                 SPR_L[2]="<'}}-<"
+SPR_R[3]='  .-.  @><(  o>@  `-`  '; SPR_L[3]='  .-.  @<o  )><@  `-`  '
+SPR_R[4]=' __/\_ @>_ ## o>@   \/  '; SPR_L[4]=' _/\__ @<o ## _<@  \/   '
+SPR_R[5]='><=>';                   SPR_L[5]='<=><'
+NSPR=6
+FISH_COLORS="208 214 203 45 81 141 226 118 213 39 216"
+
+CURSOR_CMD=""
+buf=""
+
+put() { # x y text colorcode -> appends clipped text to buf
+  local x=$1 y=$2 s=$3 col=$4 len=${#3}
+  [ $y -lt 1 ] || [ $y -gt $ROWS ] && return
+  [ $x -gt $COLS ] && return
+  [ $((x + len - 1)) -lt 1 ] && return
+  if [ $x -lt 1 ]; then s="${s:$((1 - x))}"; len=${#s}; x=1; fi
+  [ $((x + len - 1)) -gt $COLS ] && s="${s:0:$((COLS - x + 1))}"
+  buf="$buf"$'\033['"$y;${x}H"$'\033[38;5;'"${col}m$s"
+}
+
+blank() { # x y width
+  put "$1" "$2" "$(printf '%*s' "$3" '')" 0
+}
+
+sprite_lines() { # sets global SL array from '@'-joined sprite
+  local IFS='@'
+  SL=($1)
+}
+
+new_fish() { # $1 = index, $2 = 1 if may start on screen
+  local i=$1 w start=$2
+  F_SPR[$i]=$((RANDOM % NSPR))
+  F_DIR[$i]=$((RANDOM % 2))
+  F_SPD[$i]=$((RANDOM % 5 + 2))      # quarter-columns per frame
+  set -- $FISH_COLORS
+  local n=$#; shift $((RANDOM % n)); F_COL[$i]=$1
+  sprite_lines "${SPR_R[${F_SPR[$i]}]}"
+  F_H[$i]=${#SL[@]}; w=${#SL[0]}; F_W[$i]=$w
+  local top=3 bot=$((ROWS - 4 - ${F_H[$i]}))
+  [ $bot -lt $top ] && bot=$top
+  F_Y[$i]=$((top + RANDOM % (bot - top + 1)))
+  if [ "$start" = "1" ]; then
+    F_X4[$i]=$(( (RANDOM % COLS) * 4 ))
+  elif [ ${F_DIR[$i]} -eq 0 ]; then
+    F_X4[$i]=$(( (-w - RANDOM % 30) * 4 ))
+  else
+    F_X4[$i]=$(( (COLS + 1 + RANDOM % 30) * 4 ))
+  fi
+  F_PX[$i]=-999
+}
+
+layout() {
+  local sz
+  sz=$(stty size 2>/dev/null) || sz="24 80"
+  ROWS=${sz% *}; COLS=${sz#* }
+  [ "$ROWS" -lt 12 ] && ROWS=12
+  [ "$COLS" -lt 40 ] && COLS=40
+  NFISH=${OPT_FISH:-$(( COLS * ROWS / 260 ))}
+  [ $NFISH -lt 4 ] && NFISH=4
+  [ $NFISH -gt 24 ] && NFISH=24
+  local i
+  for ((i = 0; i < NFISH; i++)); do new_fish $i 1; done
+  # seaweed
+  NWEED=$(( COLS / 9 )); [ $NWEED -lt 3 ] && NWEED=3
+  for ((i = 0; i < NWEED; i++)); do
+    W_X[$i]=$(( 2 + RANDOM % (COLS - 4) ))
+    W_H[$i]=$(( 3 + RANDOM % (ROWS / 3) ))
+    W_C[$i]=$(( RANDOM % 2 ? 35 : 71 ))
+  done
+  CASTLE_X=$(( COLS * 2 / 3 ))
+  CRAB_X=$(( COLS / 4 )); CRAB_D=1
+  NBUB=0
+  JX=$(( COLS / 3 )); JY=$(( ROWS / 2 )); JD=-1
+  # static scene: sand floor
+  buf=$'\033[2J'
+  local sand="" pat=".,:'. ,.:'  .,'.:" k
+  for ((k = 0; k < COLS; k++)); do sand="$sand${pat:$((RANDOM % ${#pat})):1}"; done
+  put 1 $((ROWS - 1)) "$sand" 179
+  sand=""
+  for ((k = 0; k < COLS; k++)); do sand="$sand${pat:$((RANDOM % ${#pat})):1}"; done
+  put 1 $ROWS "$sand" 136
+  printf '%s' "$buf"; buf=""
+  RESIZED=0
+}
+
+draw_surface() {
+  local wave="" k off=$(( TICK / 3 % 4 )) pat='~^~-~^~~-~'
+  for ((k = 0; k < COLS; k++)); do wave="$wave${pat:$(( (k + off) % ${#pat} )):1}"; done
+  put 1 1 "$wave" 45
+  put 1 2 "$(printf '%*s' "$COLS" '')" 0
+}
+
+draw_castle() {
+  local y=$((ROWS - 6)) x=$CASTLE_X
+  put $x $y       "   |>  " 203
+  put $x $((y+1)) " [_|_] " 250
+  put $x $((y+2)) " |_ _| " 250
+  put $x $((y+3)) " |_n_| " 250
+}
+
+draw_weeds() {
+  local i k ch sway y
+  for ((i = 0; i < NWEED; i++)); do
+    for ((k = 0; k < W_H[i]; k++)); do
+      y=$(( ROWS - 2 - k ))
+      sway=$(( ((k + TICK / 4 + i) / 2) % 2 ))
+      if [ $(( (k + TICK / 4 + i) % 2 )) -eq 0 ]; then ch='('; else ch=')'; fi
+      # erase both sway positions then draw
+      put $(( W_X[i] )) $y "  " 0
+      put $(( W_X[i] + sway )) $y "$ch" ${W_C[$i]}
+    done
+  done
+}
+
+spawn_bubble() { # x y
+  B_X[$NBUB]=$1; B_Y[$NBUB]=$2; B_PY[$NBUB]=-1; NBUB=$((NBUB + 1))
+}
+
+draw_bubbles() {
+  local i ch keep=0
+  for ((i = 0; i < NBUB; i++)); do
+    [ ${B_PY[$i]} -gt 0 ] && put ${B_X[$i]} ${B_PY[$i]} " " 0
+    B_PY[$i]=${B_Y[$i]}
+    if [ $(( TICK % 2 )) -eq 0 ]; then
+      B_Y[$i]=$(( B_Y[i] - 1 ))
+      [ $(( RANDOM % 4 )) -eq 0 ] && B_X[$i]=$(( B_X[i] + RANDOM % 3 - 1 ))
+    fi
+    if [ ${B_Y[$i]} -le 2 ]; then continue; fi
+    if [ ${B_Y[$i]} -gt $(( ROWS * 2 / 3 )) ]; then ch='.'
+    elif [ ${B_Y[$i]} -gt $(( ROWS / 3 )) ]; then ch='o'
+    else ch='O'; fi
+    put ${B_X[$i]} ${B_Y[$i]} "$ch" 159
+    B_X[$keep]=${B_X[$i]}; B_Y[$keep]=${B_Y[$i]}; B_PY[$keep]=${B_PY[$i]}
+    keep=$((keep + 1))
+  done
+  NBUB=$keep
+}
+
+draw_fish() {
+  local i k x spr
+  for ((i = 0; i < NFISH; i++)); do
+    if [ ${F_DIR[$i]} -eq 0 ]; then spr="${SPR_R[${F_SPR[$i]}]}"
+    else spr="${SPR_L[${F_SPR[$i]}]}"; fi
+    sprite_lines "$spr"
+    # erase old
+    if [ ${F_PX[$i]} -ne -999 ]; then
+      for ((k = 0; k < F_H[i]; k++)); do blank ${F_PX[$i]} $(( F_Y[i] + k )) ${F_W[$i]}; done
+    fi
+    # move
+    if [ ${F_DIR[$i]} -eq 0 ]; then F_X4[$i]=$(( F_X4[i] + F_SPD[i] ))
+    else F_X4[$i]=$(( F_X4[i] - F_SPD[i] )); fi
+    x=$(( F_X4[i] / 4 ))
+    if [ $x -gt $(( COLS + 2 )) ] || [ $(( x + F_W[i] )) -lt -2 ]; then
+      new_fish $i 0; continue
+    fi
+    for ((k = 0; k < F_H[i]; k++)); do put $x $(( F_Y[i] + k )) "${SL[$k]}" ${F_COL[$i]}; done
+    F_PX[$i]=$x
+    # fish occasionally breathe out a bubble
+    if [ $(( RANDOM % 90 )) -eq 0 ] && [ $NBUB -lt 60 ]; then
+      if [ ${F_DIR[$i]} -eq 0 ]; then spawn_bubble $(( x + F_W[i] )) $(( F_Y[i] ))
+      else spawn_bubble $(( x - 1 )) $(( F_Y[i] )); fi
+    fi
+  done
+}
+
+draw_jelly() {
+  local k
+  for ((k = 0; k < 3; k++)); do put $JX $(( JY + k )) "     " 0; done
+  if [ $(( TICK % 3 )) -eq 0 ]; then
+    JY=$(( JY + JD ))
+    [ $JY -le 3 ] && JD=1
+    [ $JY -ge $(( ROWS - 8 )) ] && JD=-1
+    [ $(( TICK % 9 )) -eq 0 ] && JX=$(( JX + RANDOM % 3 - 1 ))
+  fi
+  put $JX $JY       " .-. " 213
+  put $JX $((JY+1)) "(___)" 213
+  if [ $(( TICK / 4 % 2 )) -eq 0 ]; then put $JX $((JY+2)) " )() " 177
+  else put $JX $((JY+2)) " ()( " 177; fi
+}
+
+draw_crab() {
+  local y=$(( ROWS - 2 )) crab='(\/)(o,,o)(\/)'
+  put $CRAB_X $y "              " 0
+  if [ $(( TICK % 2 )) -eq 0 ]; then
+    CRAB_X=$(( CRAB_X + CRAB_D ))
+    [ $CRAB_X -le 1 ] && CRAB_D=1
+    [ $CRAB_X -ge $(( COLS - 15 )) ] && CRAB_D=-1
+    [ $(( RANDOM % 60 )) -eq 0 ] && CRAB_D=$(( -CRAB_D ))
+  fi
+  put $CRAB_X $y "$crab" 202
+}
+
+swim_cleanup() {
+  printf '\033[0m\033[?25h\033[?1049l'
+  [ -n "$SAVED_STTY" ] && stty "$SAVED_STTY" 2>/dev/null
+  exit 0
+}
+
+cmd_swim() {
+  OPT_FISH=""; local fps=12
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --fish) OPT_FISH=$2; shift ;;
+      --fps)  fps=$2; shift ;;
+    esac
+    shift
+  done
+  [ -t 0 ] && [ -t 1 ] || die "swim needs an interactive terminal."
+  local delay; delay=$(awk "BEGIN{printf \"%.3f\", 1/$fps}")
+  SAVED_STTY=$(stty -g)
+  trap swim_cleanup INT TERM HUP
+  trap 'RESIZED=1' WINCH
+  printf '\033[?1049h\033[?25l'
+  stty -echo -icanon min 0 time 0
+  layout
+  TICK=0
+  local key
+  while :; do
+    [ $RESIZED -eq 1 ] && layout
+    buf=""
+    [ $(( TICK % 3 )) -eq 0 ] && draw_surface
+    draw_weeds
+    draw_castle
+    [ $(( RANDOM % 7 )) -eq 0 ] && spawn_bubble $(( CASTLE_X + 4 )) $(( ROWS - 7 ))
+    [ $(( RANDOM % 25 )) -eq 0 ] && spawn_bubble $(( W_X[RANDOM % NWEED] )) $(( ROWS - 3 ))
+    draw_bubbles
+    draw_jelly
+    draw_fish
+    draw_crab
+    put 2 $ROWS " macquarium  q to surface " 31
+    printf '%s\033[0m' "$buf"
+    key=""; IFS= read -r key 2>/dev/null
+    case "$key" in q|Q) swim_cleanup ;; esac
+    TICK=$((TICK + 1))
+    sleep "$delay"
+  done
+}
+
+# ---------------------------------------------------------------- main
+case "${1:-help}" in
+  on)        cmd_on ;;
+  off)       cmd_off ;;
+  care|feed|play) cmd_care ;;
+  ask)       shift; cmd_ask "$1" ;;
+  swim|tank) shift; cmd_swim "$@" ;;
+  status)    cmd_status ;;
+  doctor)    cmd_doctor ;;
+  corners)   shift; cmd_corners "$1" ;;
+  uninstall) cmd_uninstall ;;
+  version|-v|--version) echo "macquarium $VERSION" ;;
+  *)         cmd_help ;;
+esac
